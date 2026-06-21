@@ -3,9 +3,10 @@
 //   - secret scan: clean tree GREEN + injected secret RED (verified)
 // Exits 0 only if every proof behaves as required.
 //
-// Python + JS run in a headless browser with the network HARD-DISABLED
-// (setOfflineMode). TS is type-checked by the local tsc (inherently offline).
-// Assumes `npm run preview` is serving on :4173.
+// Python, JS AND TypeScript all run in a headless browser with the network
+// HARD-DISABLED (setOfflineMode) — no Node, no tsc subprocess on device. TS is
+// type-checked by the TypeScript compiler API loaded in-browser (window.tsCheck)
+// and executed via transpile (window.tsRun). Assumes preview is serving on :4173.
 
 import puppeteer from "puppeteer";
 import { spawnSync } from "node:child_process";
@@ -31,7 +32,7 @@ try {
   const warm = await browser.newPage();
   await warm.goto(URL, { waitUntil: "load" });
   await warm.waitForFunction(() => window.__GATE_READY__ === true, { timeout: 120_000 });
-  await new Promise((r) => setTimeout(r, 3000)); // let SW cache big assets
+  await new Promise((r) => setTimeout(r, 5000)); // let SW cache big assets (Pyodide + typescript.js)
   await warm.close();
 
   // Offline page: everything (incl. Pyodide) must come from cache.
@@ -74,32 +75,31 @@ try {
     jsBad.ok === false && Boolean(jsBad.error),
     `error=${jsBad.error}`);
 
+  // --- TS GREEN: valid TS type-checks clean AND transpiles+runs in-browser ---
+  // Pure-intrinsic snippet (no lib members), so the on-device noLib check works.
+  const TS_GOOD = "const n: number = 6; const m: number = 7; const product: number = n * m;";
+  const tsGoodChk = await page.evaluate((c) => window.tsCheck(c), TS_GOOD);
+  const tsGoodRun = await page.evaluate(
+    (c) => window.tsRun(c, "product"),
+    TS_GOOD,
+  );
+  record("TS green-case: type-checks clean + runs to 42 (offline, in-browser)",
+    tsGoodChk.length === 0 && tsGoodRun.error === null && tsGoodRun.value === 42,
+    `diags=${JSON.stringify(tsGoodChk)} result=${JSON.stringify(tsGoodRun)}`);
+
+  // --- TS RED: type error must be CAUGHT (not stripped) in-browser ---
+  const tsBadChk = await page.evaluate(
+    (c) => window.tsCheck(c),
+    'const n: number = "str"; void n;',
+  );
+  record("TS red-case: type error TS2322 caught (offline, in-browser)",
+    tsBadChk.some((d) => d.code === 2322),
+    `diags=${JSON.stringify(tsBadChk)}`);
+
   await page.close();
 } finally {
   await browser.close();
 }
-
-// ---------------- TypeScript via local tsc (offline) ----------------
-function tsCheck(code) {
-  const dir = mkdtempSync(join(tmpdir(), "p1ts-"));
-  const file = join(dir, "snippet.ts");
-  writeFileSync(file, code);
-  const res = spawnSync("node_modules/.bin/tsc", ["--noEmit", "--strict", file], {
-    encoding: "utf8",
-  });
-  rmSync(dir, { recursive: true, force: true });
-  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
-}
-
-const tsGood = tsCheck("const n: number = 42; const r: string = n.toFixed(2); void r;");
-record("TS green-case: well-typed snippet compiles clean",
-  tsGood.status === 0,
-  tsGood.out.trim() || "(no diagnostics)");
-
-const tsBad = tsCheck('const n: number = "str"; void n;');
-record("TS red-case: type error (TS2322) caught",
-  tsBad.status !== 0 && /TS2322/.test(tsBad.out),
-  lastLine(tsBad.out));
 
 // ---------------- Secret scan: clean GREEN + injected RED ----------------
 const scanGreen = spawnSync("bash", ["scripts/secret-scan.sh"], { encoding: "utf8" });

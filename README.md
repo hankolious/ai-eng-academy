@@ -74,6 +74,37 @@ fully disabled (`setOfflineMode(true)`):
   whose name differs, so stale hashed assets don't accumulate across rebuilds
   (spec correction #1).
 
+## P1 gate (offline green/red proofs per language)
+
+`bash scripts/p1-gate.sh` (build → preview → gate; exit code == gate result)
+proves the test harness has **teeth**: one 🟢 green + one 🔴 red case per language,
+all **on-device in the browser with the network hard-disabled** (`setOfflineMode`,
+`navigator.onLine === false`), plus a self-checking secret scan.
+
+- **Python / JS** run in the offline page (Pyodide from the SW cache; JS native).
+- **TypeScript runs fully on-device too** — no `tsc` subprocess, no Node at
+  runtime. The standalone `typescript.js` is copied to `/vendor/` and loaded via a
+  script tag (SW-cached for offline). Two distinct paths:
+  - `window.tsCheck` — the **TypeScript compiler API** (`createProgram` +
+    `getSemanticDiagnostics`). This **genuinely catches** type errors.
+  - `window.tsRun` — `transpileModule` + execute, to run valid TS.
+
+  **Honest caveat:** transpilers (esbuild, `transpileModule`) only **strip** types —
+  they do NOT catch `const n: number = "str"`. That is why the red proof uses the
+  separate compiler-API type-check path, not the transpiler. The `tsCheck` path
+  runs with `noLib` so it is self-contained on device (intrinsic `number`/`string`
+  mismatches still yield TS2322 without shipping `lib.d.ts`); snippets therefore
+  avoid lib members like `Array`/`Number` methods.
+
+Latest gate result — `P1 GATE: GREEN`, all 9 proofs PASS:
+
+| Lang | 🟢 green | 🔴 red |
+|---|---|---|
+| Python | `print(6*7)` → `42` | `print(undefined_var)` → `NameError` caught |
+| JS | `[1,2,3].map(x=>x*2)` → `[2,4,6]` | `null.foo` → `TypeError` caught |
+| TS | type-checks clean + runs → `42` | `const n: number = "str"` → `TS2322` caught |
+| Secret scan | tracked tree clean (exit 0) | injected example key caught (exit 1) |
+
 ## Scope
 
 This is a throwaway spike: no tests beyond the measurement scripts, no micropip
