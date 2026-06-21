@@ -105,7 +105,36 @@ Latest gate result — `P1 GATE: GREEN`, all 9 proofs PASS:
 | TS | type-checks clean + runs → `42` | `const n: number = "str"` → `TS2322` caught |
 | Secret scan | tracked tree clean (exit 0) | injected example key caught (exit 1) |
 
+## P2 — FSRS scheduler + offline state (IndexedDB)
+
+A spaced-repetition core using **FSRS** (the DSR model, *not* SM-2), with all
+state persisted offline in IndexedDB. No backend, no network.
+
+- **`src/fsrs/scheduler.ts`** — wraps `ts-fsrs` with `enable_short_term:false`
+  (day-based intervals) and `enable_fuzz:false` (deterministic). `review()`
+  returns the rescheduled card incl. new `due`, `scheduled_days`, and — on Again
+  from Review — an incremented `lapses` count.
+- **`src/store/cardStore.ts`** — IndexedDB persistence (browser `window.indexedDB`;
+  tests use `fake-indexeddb`). Source of truth for due-items, intervals, lapses
+  across reloads. A `due` index returns due cards sorted soonest-first.
+- **`src/review/queue.ts`** — `getDueCards(now)` and `rateCard(...)` (reschedule
+  + persist).
+
+**Gate:** `npm test` (Vitest, `test/fsrs.test.ts`) — a multi-day simulation over
+60 simulated days asserting **correct re-presentation**:
+
+| Check | Assertion |
+|---|---|
+| FSRS not SM-2 | repeated `Good` → strictly **growing** intervals (≈3 → 11 → 35 days) |
+| Lapses | `Again` from Review increments `lapses` and **shortens** the interval |
+| Queue timing | a card surfaces **only on/after** its due instant, never before |
+| Durability | state survives store close/reopen (due, lapses, stability intact) |
+| Multi-day sim | each card re-presented on the right days; review gaps grow; `reps` consistent |
+
+Result: **5/5 tests pass** (deterministic across re-runs).
+
 ## Scope
 
-This is a throwaway spike: no tests beyond the measurement scripts, no micropip
-/ third-party wheels, no production hardening.
+This is a throwaway spike: no production hardening, no micropip / third-party
+wheels. Tests cover the FSRS scheduler + offline state (`npm test`) and the P1
+multi-language offline gate (`scripts/p1-gate.sh`).
