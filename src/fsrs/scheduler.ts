@@ -8,16 +8,6 @@ import {
   type Grade,
 } from "ts-fsrs";
 
-// FSRS scheduler (the DSR model — NOT SM-2). Deterministic for tests:
-//   - enable_fuzz:false       → no random interval jitter
-//   - enable_short_term:false → skip sub-day learning steps, so reviews land on
-//                               day-based intervals (clean multi-day simulation)
-const params = generatorParameters({
-  enable_fuzz: false,
-  enable_short_term: false,
-});
-const engine = fsrs(params);
-
 export { Rating, State };
 
 // Serializable card record persisted in IndexedDB. Dates are epoch-ms numbers so
@@ -65,14 +55,55 @@ function fromFsrs(id: string, c: Card): StoredCard {
   };
 }
 
-// A brand-new card is due immediately (due === nowMs).
-export function newCard(id: string, nowMs: number): StoredCard {
-  return fromFsrs(id, createEmptyCard(new Date(nowMs)));
+export interface SchedulerOptions {
+  /**
+   * Desired retention (probability of recall at review time) the scheduler
+   * targets. FSRS solves the next interval for THIS probability — higher
+   * retention → shorter intervals, lower → longer. Default 0.9.
+   */
+  requestRetention?: number;
 }
 
-// Apply a rating at time `whenMs`, returning the updated card (new due, interval,
-// stability, and — on Again from Review — an incremented lapse count).
+export interface Scheduler {
+  readonly requestRetention: number;
+  newCard(id: string, nowMs: number): StoredCard;
+  review(card: StoredCard, rating: Grade, whenMs: number): StoredCard;
+}
+
+// FSRS scheduler (the DSR model — NOT SM-2). Deterministic for tests:
+//   - enable_fuzz:false       → no random interval jitter
+//   - enable_short_term:false → skip sub-day learning steps, so reviews land on
+//                               day-based intervals (clean multi-day simulation)
+// `requestRetention` is the real FSRS retention target and directly drives the
+// interval the model solves for.
+export function createScheduler(opts: SchedulerOptions = {}): Scheduler {
+  const params = generatorParameters({
+    enable_fuzz: false,
+    enable_short_term: false,
+    request_retention: opts.requestRetention ?? 0.9,
+  });
+  const engine = fsrs(params);
+  return {
+    requestRetention: params.request_retention,
+    // A brand-new card is due immediately (due === nowMs).
+    newCard(id, nowMs) {
+      return fromFsrs(id, createEmptyCard(new Date(nowMs)));
+    },
+    // Apply a rating at `whenMs`: new due, interval, stability, difficulty, and —
+    // on Again from Review — an incremented lapse count.
+    review(card, rating, whenMs) {
+      const next = engine.next(toFsrs(card), new Date(whenMs), rating).card;
+      return fromFsrs(card.id, next);
+    },
+  };
+}
+
+const defaultScheduler = createScheduler();
+
+export function newCard(id: string, nowMs: number): StoredCard {
+  return defaultScheduler.newCard(id, nowMs);
+}
+
 export function review(card: StoredCard, rating: Grade, whenMs: number): StoredCard {
-  const next = engine.next(toFsrs(card), new Date(whenMs), rating).card;
-  return fromFsrs(card.id, next);
+  return defaultScheduler.review(card, rating, whenMs);
 }
